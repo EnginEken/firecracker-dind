@@ -1,0 +1,57 @@
+FROM ubuntu:24.04
+
+# Set environment variables to non-interactive to avoid prompts during installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Update package lists and install necessary packages for systemd
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    systemd \
+    sudo \
+    net-tools \
+    iproute2 \
+    vim \
+    less \
+    wget \
+    curl \
+    apt-transport-https \
+    ca-certificates \
+    gnupg \
+    iputils-ping \
+    jq \
+    lsb-release && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Unminimize the Ubuntu image to ensure full functionality of systemd
+RUN apt-get update && apt-get install -y ubuntu-standard && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Firecracker
+RUN ARCH="$(uname -m)" && \
+    release_url="https://github.com/firecracker-microvm/firecracker/releases" && \
+    latest=$(basename $(curl -fsSLI -o /dev/null -w %{url_effective} ${release_url}/latest)) && \
+    curl -L ${release_url}/download/${latest}/firecracker-${latest}-${ARCH}.tgz | tar -xz && \
+    mv release-${latest}-$(uname -m)/firecracker-${latest}-${ARCH} /usr/local/bin/firecracker && \
+    chmod +x /usr/local/bin/firecracker && \
+    rm -rf release-${latest}-$(uname -m)
+
+# Ensure the /opt/firecracker directory has appropriate permissions
+RUN mkdir -p /opt/firecracker
+
+# Copy the Firecracker kernel image and root filesystem image into the container
+COPY firecracker/vmlinux-5.10.225 /opt/firecracker/vmlinux-5.10.225
+COPY firecracker/image.ext4 /opt/firecracker/image.ext4
+COPY firecracker/firecracker-config.json /opt/firecracker/firecracker-config.json
+
+RUN chmod -R 755 /opt/firecracker
+
+# Enable systemd services
+STOPSIGNAL SIGRTMIN+3
+
+# Copy and set entrypoint script
+COPY scripts/docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Set the entrypoint to the script that starts systemd
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
