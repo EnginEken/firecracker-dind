@@ -1,7 +1,6 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-# ENV KERNEL_SOURCE_VERSION=6.8.0
 
 WORKDIR /root
 
@@ -11,10 +10,10 @@ RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh
 # Copy the SSH public key into authorized_keys
 # Adjust the path if your id_rsa.pub is in a subdirectory like ssh_keys/
 # Read README, ssh key pair needs to be created first under repo folder
-COPY ./id_rsa.pub /root/.ssh/authorized_keys
+# COPY ./id_rsa.pub /root/.ssh/authorized_keys
 
 # Set permissions for authorized_keys
-RUN chmod 600 /root/.ssh/authorized_keys
+# RUN chmod 600 /root/.ssh/authorized_keys
 
 # Install necessarry packages to debootstrap new ubuntu noble disk file
 RUN apt-get update && apt-get install -y debootstrap rsync rsyslog
