@@ -69,6 +69,67 @@ $ make menuconfig # This will open a TUI where you can customise the options.
 $ make vmlinux # for x86_64 architecture and "make Image" for aarch64
 ```
 
+**NOTE:** Below is a comprehensive (though not necessarily minimal) list of kernel configuration options that should be enabled (compiled as either built-in =y or loadable modules =m) to run Docker successfully on a Linux host:
+
+```sh
+# Namespaces
+CONFIG_NAMESPACES=y
+CONFIG_UTS_NS=y
+CONFIG_IPC_NS=y
+CONFIG_USER_NS=y
+CONFIG_PID_NS=y
+CONFIG_NET_NS=y
+
+# cgroups
+CONFIG_CGROUPS=y
+CONFIG_CGROUP_SCHED=y
+CONFIG_CGROUP_DEVICE=y
+CONFIG_CGROUP_FREEZER=y
+CONFIG_CGROUP_CPUACCT=y
+CONFIG_CGROUP_PIDS=y
+CONFIG_MEMCG=y
+CONFIG_BLK_CGROUP=y
+CONFIG_CGROUP_HUGETLB=y
+
+# OverlayFS
+CONFIG_OVERLAY_FS=y
+
+# Netfilter + iptables
+CONFIG_NETFILTER=y
+CONFIG_NF_TABLES=y
+CONFIG_NF_CONNTRACK=y
+CONFIG_NF_NAT=y
+CONFIG_NF_NAT_IPV4=y
+CONFIG_NF_NAT_MASQUERADE_IPV4=y
+CONFIG_NFT_MASQ=y
+CONFIG_NFT_REDIR=y
+CONFIG_NETFILTER_XTABLES=y
+CONFIG_IP_NF_IPTABLES=y
+CONFIG_IP_NF_FILTER=y
+CONFIG_IP_NF_NAT=y
+CONFIG_IP_NF_MANGLE=y
+CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y
+CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+
+# Virtual Network Interfaces
+CONFIG_VETH=y
+CONFIG_BRIDGE=y
+CONFIG_BRIDGE_NETFILTER=y
+
+# Security (Recommended)
+CONFIG_SECCOMP=y
+CONFIG_SECCOMP_FILTER=y
+CONFIG_KEYS=y
+CONFIG_CRYPTO_USER_API_HASH=y
+CONFIG_CRYPTO_USER_API_SKCIPHER=y
+CONFIG_DEVPTS_MULTIPLE_INSTANCES=y
+
+# cgroups v2 (Optional)
+CONFIG_CGROUP_V2=y
+CONFIG_CGROUP_BPF=y
+```
+
 ## Creating a rootfs Image
 
 A rootfs image is just a file system image, that hosts at least an init system. We'll use a docker container to create ubuntu ext4 type rootfs. This container is using `debootstrap` command to create it with my needs. Feel free to try different ways to create rootfs. You can check [firecracker docs](https://github.com/firecracker-microvm/firecracker/blob/main/docs/rootfs-and-kernel-setup.md#creating-a-rootfs-image) to see another way of creating a rootfs image.
@@ -84,18 +145,64 @@ docker run --privileged -it --rm -v $(pwd)/output:/output ubuntu-rootfs
 
 This will create output folder and put the image rootfs file named `image.ext4` under it. This will be our microVM's rootfs image.
 
-Build with `docker build -f Dockerfile.firecracker -t ubuntu-systemd .`
-If you want to use different network than the default docker network, create the bridge with `docker network create --driver=bridge --subnet=172.31.0.0/30 --gateway=172.31.0.1 br-test` and run the container with `docker run -d --privileged --name ubuntu-systemd-test --network br-test ubuntu-systemd`. If not, use below command.
-Run with `docker run -d --privileged --name ubuntu-systemd-test ubuntu-systemd`
+## Running Firecracker Container
 
-Now you have an Ubuntu 24.04 container which has firecracker binary, kernel compiled with necessary config for running docker containers and debootstrapped ubuntu 24.04 rootfs with well-known packages.
-You can now run a container inside an ubuntu 24.04 microVM which runs inside an ubuntu 24.04 container which runs inside a VM with the OS choice of yours(mine was ubuntu 24.04). With this, you have the below setup:
+You can run the ubuntu container with firecracker binary installed with below commands:
+
+1. Build the image with:
+```sh
+docker build -f Dockerfile.firecracker -t ubuntu-systemd .
+```
+
+2. If you want to use different network than the default docker bridge, create the new bridge with:
+```sh
+# You may want to use different subnet, gateway and name, this is just an example
+docker network create --driver=bridge --subnet=172.31.0.0/30 --gateway=172.31.0.1 br-test
+```
+
+3. Run the image with:
+```sh
+docker run -d --privileged --name ubuntu-firecracker ubuntu-systemd
+
+# If you don't want to run the container with full priviliges, you can run it with below restrictions:
+docker run -d --cap-add=NET_ADMIN --cap-add=SYS_ADMIN --name ubuntu-firecracker ubuntu-systemd
+```
+
+4. Run the firecracker MicroVM with(please read `What is this image doing` and `What is docker-entrypoint.sh doing` sections first):
+```sh
+docker exec -it ubuntu-firecracker firecracker --no-api --config-file /opt/firecracker/firecracker-config.json
+```
+
+This will put you directly inside the microVM. It's not ideal because it's a serial console and ssh would be better, but it works for now. You can now run `docker run -d --name test -p 8080:80 httpd` inside the microVM and test it with `curl http://localhost:8080` and see it's working.
+
+**NOTE:** Inside the `Dockerfile.firecracker` dockerfile, there are lines to copy the compiled kernel and bootstrapped rootfs. You may change those lines with your file locations or you can copy them under `firecracker` folder in this repo.
+
+### What is this image doing?
+
+- Uses `Ubuntu 24.04` as base image,
+- Installs widely-used packages in ubuntu along with packages to install docker,
+- Unminimize the ubuntu base image(you don't have to do this and it might change for me as well),
+- Installs `firecracker` binary
+- Creates `/opt/firecracker` folder and copies kernel, rootfs and firecracker config inside it,
+- Copies `docker-entrypoint.sh`, which is under `scripts` folder, and configure it as `CMD`
+
+### What is `docker-entrypoint.sh` doing?
+
+- Creates a `/30` TAP device named `tap0`,
+- Sets the IP address as `172.16.0.1/30`,
+- Brings this device up,
+- Enables IP Forwarding `sysctl` option,
+- Setups `iptables` rules for NAT(necessarry for microVM internet access through container's interface)
+- Starts the `systemd`
+
+We now have a running `httpd` container inside an ubuntu 24.04 microVM which runs inside an ubuntu 24.04 container which runs inside a VM with the OS choice of yours(mine was ubuntu 24.04). With this, you have the below setup:
 
 ![Setup](images/setup.png)
 
 ## **IMPORTANT**:
 
-After you created your tap device, you need to be sure that below rule exist:
+`docker-entrypoint.sh` is creating the TAP device and `iptables` NAT rules but it's useful to check if the rule exists since it's crucial for microVM's internet access.
+
 ```sh
 # -t nat: Specifies the nat table.
 # -A POSTROUTING: Appends the rule to the POSTROUTING chain. This chain is used for altering packets as they leave the network interface.
@@ -106,7 +213,7 @@ iptables -t nat -A POSTROUTING -o "$HOST_IFACE" -j MASQUERADE
 
 # List existing rules with below:
 iptables -t nat -L POSTROUTING -n -v --line-numbers
-# Example output:
+# Example output, see the second rule:
 # Chain POSTROUTING (policy ACCEPT 42 packets, 2712 bytes)
 # num   pkts bytes target              prot opt in     out     source               destination
 # 1        2   152 DOCKER_POSTROUTING  0    --  *      *       0.0.0.0/0            127.0.0.11
