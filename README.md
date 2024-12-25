@@ -213,3 +213,7 @@ You can now run `docker run -d --name test -p 8080:80 httpd` inside the microVM 
 We now have a running `httpd` container inside an ubuntu 24.04 microVM which runs inside an ubuntu 24.04 container which runs inside a VM with the OS choice of yours(mine was ubuntu 24.04). With this, you have the below setup:
 
 ![Setup](images/setup.png)
+
+### How SSH works
+
+![SSH](images/ssh.png)
