@@ -74,6 +74,9 @@ update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
 echo "Welcome to your Ubuntu microVM!" > /etc/motd
 echo "Try running 'sudo docker run --rm -it ubuntu:latest bash' to start a container." >> /etc/motd
 
+# Enable ssh service
+systemctl enable ssh
+
 # Clean Up
 apt-get clean
 rm -rf /var/lib/apt/lists/*

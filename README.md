@@ -143,7 +143,7 @@ docker build -f Dockerfile.rootfs -t ubuntu-rootfs .
 docker run --privileged -it --rm -v $(pwd)/output:/output ubuntu-rootfs
 ```
 
-This will create output folder and put the image rootfs file named `image.ext4` under it. This will be our microVM's rootfs image.
+This will create output folder and put the image rootfs file named `image.ext4` under it. This will be our microVM's rootfs image. `Dockerfile.firecracker` copies rootfs from `firecracker` folder on this repo. So, you might want to copy it to `firecracker` folder before building the image. Same thing for kernel as well.
 
 ## Running Firecracker Container
 
@@ -151,7 +151,7 @@ You can run the ubuntu container with firecracker binary installed with below co
 
 1. Build the image with:
 ```sh
-docker build -f Dockerfile.firecracker -t ubuntu-systemd .
+docker build -f Dockerfile.firecracker -t ubuntu-firecracker .
 ```
 
 2. If you want to use different network than the default docker bridge, create the new bridge with:
@@ -162,60 +162,54 @@ docker network create --driver=bridge --subnet=172.31.0.0/30 --gateway=172.31.0.
 
 3. Run the image with:
 ```sh
-docker run -d --privileged --name ubuntu-firecracker ubuntu-systemd
+docker run -d -p 2200-2299:2200-2299 --privileged --device /dev/kvm --name firecracker-container ubuntu-firecracker
 
-# If you don't want to run the container with full priviliges, you can run it with below restrictions:
-docker run -d --cap-add=NET_ADMIN --cap-add=SYS_ADMIN --name ubuntu-firecracker ubuntu-systemd
+# If you want it to run in created network
+docker run -d -p 2200-2299:2200-2299 --privileged --device /dev/kvm --name firecracker-container --network br-test ubuntu-firecracker
 ```
 
-4. Run the firecracker MicroVM with(please read `What is this image doing` and `What is docker-entrypoint.sh doing` sections first):
+4. Run the firecracker MicroVM number 1 with(please read `What is this image doing`, `What is docker-entrypoint.sh doing` and `What is launch_microvm.sh doing?` sections first):
 ```sh
-docker exec -it ubuntu-firecracker firecracker --no-api --config-file /opt/firecracker/firecracker-config.json
+docker exec ubuntu-firecracker bash /usr/local/bin/launch_microvm.sh 1
 ```
 
-This will put you directly inside the microVM. It's not ideal because it's a serial console and ssh would be better, but it works for now. You can now run `docker run -d --name test -p 8080:80 httpd` inside the microVM and test it with `curl http://localhost:8080` and see it's working.
+5. SSH into microvm with:
+```sh
+ssh -i <generated_ssh_private_key_file> root@<ip_address_of_the_host_vm> -p 2201
+```
+This will create a bridge network inside the container with the ip address `172.16.0.1/24`. Then it'll create the tap device only for microvm number 1, create the config file and firecracker socket for microvm number 1, configure the iptables rules to redirect mapped port requests to microvm's ssh port and start the microvm.
+You can now run `docker run -d --name test -p 8080:80 httpd` inside the microVM and test it with `curl http://localhost:8080` and see it's working.
 
 **NOTE:** Inside the `Dockerfile.firecracker` dockerfile, there are lines to copy the compiled kernel and bootstrapped rootfs. You may change those lines with your file locations or you can copy them under `firecracker` folder in this repo.
 
 ### What is this image doing?
 
 - Uses `Ubuntu 24.04` as base image,
-- Installs widely-used packages in ubuntu along with packages to install docker,
-- Unminimize the ubuntu base image(you don't have to do this and it might change for me as well),
+- Installs required packages,
+- Configures SSHd
 - Installs `firecracker` binary
-- Creates `/opt/firecracker` folder and copies kernel, rootfs and firecracker config inside it,
+- Creates `/opt/firecracker` folder and copies kernel, rootfs and firecracker config template inside it,
+- Exposes container port `2200-2299` for microvm ssh access. These ports will be mapped to microvm ssh ports when creating,
+- Copies `launch_microvm.sh`, which is under `scripts` folder and created to automate microvm deployment inside the container,
 - Copies `docker-entrypoint.sh`, which is under `scripts` folder, and configure it as `CMD`
 
 ### What is `docker-entrypoint.sh` doing?
 
-- Creates a `/30` TAP device named `tap0`,
-- Sets the IP address as `172.16.0.1/30`,
-- Brings this device up,
+- Creates a bridge network with the name `fc_bridge` and assign ip address `172.16.0.1/24` address to it and bring it to up state(this will be the bridge network that all microvm tap devices will be connected to),
 - Enables IP Forwarding `sysctl` option,
 - Setups `iptables` rules for NAT(necessarry for microVM internet access through container's interface)
-- Starts the `systemd`
+- Runs `tail -f /dev/null` command to keep the container up
+
+### What is `launch_microvm.sh` doing?
+
+- Run the script with microvm number, you can give a number between 1-99,
+- Sets required environment variables based on given number like bridge name ssh base port, which is 2200, and tap id,
+- Creates the `tap<x>` device without an ip address(you can change it, I chose to connect every microvm inside a container to connect to the same bridge for them to talk each other),
+- Generates the firecracker config file `config_<x>.json` based on variables,
+- Starts the microvm using generated config file and generated api socker,
+- Configures container's iptables to accept and redirect all the traffic destined to `2200 + VM_ID` to `172.16.0.{VM_ID + 1}:22` ip and port
+
 
 We now have a running `httpd` container inside an ubuntu 24.04 microVM which runs inside an ubuntu 24.04 container which runs inside a VM with the OS choice of yours(mine was ubuntu 24.04). With this, you have the below setup:
 
 ![Setup](images/setup.png)
-
-## **IMPORTANT**:
-
-`docker-entrypoint.sh` is creating the TAP device and `iptables` NAT rules but it's useful to check if the rule exists since it's crucial for microVM's internet access.
-
-```sh
-# -t nat: Specifies the nat table.
-# -A POSTROUTING: Appends the rule to the POSTROUTING chain. This chain is used for altering packets as they leave the network interface.
-# -o eth0: Specifies that this rule applies to packets going out through the eth0 interface.
-# -j MASQUERADE: Tells iptables to perform source NAT, replacing the source IP address with the IP of the outgoing interface (eth0)
-
-iptables -t nat -A POSTROUTING -o "$HOST_IFACE" -j MASQUERADE
-
-# List existing rules with below:
-iptables -t nat -L POSTROUTING -n -v --line-numbers
-# Example output, see the second rule:
-# Chain POSTROUTING (policy ACCEPT 42 packets, 2712 bytes)
-# num   pkts bytes target              prot opt in     out     source               destination
-# 1        2   152 DOCKER_POSTROUTING  0    --  *      *       0.0.0.0/0            127.0.0.11
-# 2        0     0 MASQUERADE          0    --  *      eth0    0.0.0.0/0            0.0.0.0/0
-```

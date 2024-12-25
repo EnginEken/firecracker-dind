@@ -1,31 +1,29 @@
+# Use a minimal Ubuntu base image
 FROM ubuntu:24.04
 
 # Set environment variables to non-interactive to avoid prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Update package lists and install necessary packages for systemd
+# Install essential packages only
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    systemd \
     sudo \
     net-tools \
     iproute2 \
-    vim \
-    less \
-    wget \
-    curl \
-    apt-transport-https \
-    ca-certificates \
-    gnupg \
     iputils-ping \
+    curl \
     jq \
-    lsb-release && \
+    lsb-release \
+    dnsutils \
+    openssh-server \
+    iptables \
+    ca-certificates && \
+    mkdir /var/run/sshd && \
+    echo 'root:rootpassword' | chpasswd && \
+    sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-
-# Unminimize the Ubuntu image to ensure full functionality of systemd
-RUN apt-get update && apt-get install -y ubuntu-standard && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install Firecracker
 RUN ARCH="$(uname -m)" && \
@@ -36,22 +34,27 @@ RUN ARCH="$(uname -m)" && \
     chmod +x /usr/local/bin/firecracker && \
     rm -rf release-${latest}-$(uname -m)
 
-# Ensure the /opt/firecracker directory has appropriate permissions
+# Create necessary directories
 RUN mkdir -p /opt/firecracker
 
-# Copy the Firecracker kernel image and root filesystem image into the container
-COPY firecracker/vmlinux-5.10.225 /opt/firecracker/vmlinux-5.10.225
-COPY firecracker/image.ext4 /opt/firecracker/image.ext4
-COPY firecracker/firecracker-config.json /opt/firecracker/firecracker-config.json
+# Copy Firecracker kernel, rootfs, and base config
+COPY firecracker/vmlinux-5.10.225 /opt/firecracker/vmlinux
+COPY firecracker/image.ext4 /opt/firecracker/rootfs.ext4
+COPY firecracker/firecracker-config.json /opt/firecracker/config.json
 
+# Set appropriate permissions
 RUN chmod -R 755 /opt/firecracker
 
-# Enable systemd services
-STOPSIGNAL SIGRTMIN+3
+# Expose SSH port for the container and additional ports for microVMs
+EXPOSE 2200-2299
+
+# Copy the launch script
+COPY script/launch_microvm.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/launch_microvm.sh
 
 # Copy and set entrypoint script
-COPY scripts/docker-entrypoint.sh /usr/local/bin/
+COPY script/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Set the entrypoint to the script that starts systemd
+# Set the entrypoint to keep the container running
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
